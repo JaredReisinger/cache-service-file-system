@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const mkdirp = require('mkdirp');
 
 function filesystemCacheModule(config) {
     var self = this;
@@ -56,20 +57,22 @@ function filesystemCacheModule(config) {
         log('set() called', { key: key, value: value });
         if (arguments.length === 3 && typeof expiration === 'function') {
             callback = expiration;
-            delete expiration;
+            expiration = undefined;
         } else if (arguments.length === 4) {
             callback = refresh;
             if (typeof expiration === 'function') {
                 refresh = expiration;
-                delete expiration;
+                expiration = undefined;
             }
         }
         callback = callback || noop;
-        var name = pathify(key);
+        var filePath = pathify(key);
         var data = JSON.stringify(value);
-        fs.writeFile(name, data, (err) => {
-            error('set() error', { key: key, err: err });
-            callback(err);
+        mkdirp(path.dirname(filePath), err => {
+            fs.writeFile(filePath, data, err => {
+                error('set() error', { key: key, err: err });
+                callback(err);
+            });
         });
     };
 
@@ -77,7 +80,7 @@ function filesystemCacheModule(config) {
         log('mset() called', { obj: obj });
         if (arguments.length === 2 && typeof expiration === 'function') {
             callback = expiration;
-            delete expiration;
+            expiration = undefined;
         }
         callback = callback || noop;
         var keys = obj.keys();
@@ -139,11 +142,15 @@ function filesystemCacheModule(config) {
     }
 
     function pathify(key) {
-        var padded = key;
-        if (key.length < 4) {
-            padded = key + "=".repeat(4 - key.length)
+        var parts = [self.cacheRoot];
+        var remaining = key;
+        while (remaining.length > 2) {
+            parts.push(remaining.substr(0, 2));
+            remaining = remaining.substr(2);
         }
-        return path.join(self.cacheRoot, padded.substr(0,2), padded.substr(2,2), key + '.json');
+        parts.push(key + '.json');
+
+        return path.join.apply(path, parts);
     }
 
     function log(message, data) {

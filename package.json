@@ -22,5 +22,7 @@
     "url": "https://github.com/JaredReisinger/cache-service-file-system/issues"
   },
   "homepage": "https://github.com/JaredReisinger/cache-service-file-system#readme",
-  "dependencies": {}
+  "dependencies": {
+    "mkdirp": "^0.5.1"
+  }
 }
