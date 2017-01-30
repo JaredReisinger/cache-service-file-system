@@ -9,10 +9,10 @@ Currently compatible with cache-service 1.3.
 Require and instantiate:
 
 ```javascript
-const csFsCache = require('cache-service-file-system');
+const FsCache = require('cache-service-file-system');
 
-var fsCache = csFsCache({
-    cacheRoot: './cache'
+var fsCache = new FsCache({
+    cacheRoot: './cache'    // evaluated relative to working directory
 });
 ```
 
@@ -34,6 +34,22 @@ A path to the root file-system directory to use for cached data.
 * type: string
 * default: './cache' (relative to working directory)
 
+## pathify
+
+A function to customize mapping the key to a relative cache path.  The default
+implementation takes a key like "abc123def" and returns the path
+"ab/c1/23/de/abc123def.json", which works reasonably well for relatively short
+keys.  You can provide a `pathify` implementation for cases where you can't
+control the key directly, but need to ensure valid and short cache paths.  For
+example,
+[superagent-cache-plugin](https://github.com/jpodwys/superagent-cache-plugin)
+simply `JSON.stringify()`'s several values as a key.  For a more compact/dense
+cache, you can return a hash of this value.
+
+* type: function
+* default: (creates a subdirectory for every two characters in the key)
+
+
 ## readOnly
 
 Whether the cache is read-only or not.
@@ -51,3 +67,10 @@ debugging).
 
 * type: boolean
 * default: false
+
+## type
+
+A name used for diagnostics/logs, to disambiguate between multiple instances.
+
+* type: string
+* default: 'file-system'
