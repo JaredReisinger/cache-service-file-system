@@ -149,7 +149,8 @@ FSCache.prototype.mgetall = function mgetall(callback) {
     var self = this;
     log(self, 'mgetall() called');
     getTreeOrFile(self, self.cacheRoot, {}, (err, data) => {
-        log(self, 'mgetall() got', { data: data, err: err })
+        log(self, 'mgetall() got', { data: data, err: err });
+        callback(err, data);
     });
 };
 
