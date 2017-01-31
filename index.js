@@ -20,29 +20,14 @@ function FSCache(config) {
 // === cache-service API (public) ===
 
 FSCache.prototype.get = function get(key, callback) {
-    var self = this;
-    log(self, 'get() called', { key: key });
+    log(this, 'get() called', { key: key });
     var name = fullPathify(this, key);
-    fs.readFile(name, (err, data) => {
-        var result = null;
+    getFile(this, key, name, (err, obj) => {
         if (err) {
-            error(self, 'get() read error', { key: key, err: err });
-        } else {
-            try {
-                result = JSON.parse(data.toString());
-                // TODO: have to check to see if the data has expired!
-                if (result.expires > 0 && result.expires <= Date.now()) {
-                    log(self, 'get() data has expired!', { key: key })
-                    throw 'data has expired';
-                    result = null;
-                } else {
-                    result = result.data;
-                }
-            } catch (err) {
-                error(self, 'get() JSON error', { key: key, err: err })
-            }
+            callback(err);
+            return;
         }
-        callback(err, result);
+        callback(null, obj.data);
     });
 };
 
@@ -86,6 +71,7 @@ FSCache.prototype.set = function set(key, value, expiration, refresh, callback) 
     // UTC expiration in milliseconds, zero means "never expires".
     var expires = expiration > 0 ? Date.now() + (expiration * 1000) : 0;
     var cacheData = {
+        key: key,
         expires: expires,
         data: value,
     };
@@ -157,9 +143,16 @@ FSCache.prototype.flush = function flush(callback) {
 
 FSCache.prototype.db = 'none'; // bogus truthy value, just in case
 
-// relativePathify isn't a part of the cache-service API, but is exposed so
-// that custom pathify implementations can use it to get the automatic
-// directory beahvior.
+// mgetall and relativePathify aren't a part of the cache-service API, but are
+// exposed as supported helpers.
+FSCache.prototype.mgetall = function mgetall(callback) {
+    var self = this;
+    log(self, 'mgetall() called');
+    getTreeOrFile(self, self.cacheRoot, {}, (err, data) => {
+        log(self, 'mgetall() got', { data: data, err: err })
+    });
+};
+
 FSCache.prototype.relativePathify = function relativePathify(key) {
     var parts = [];
     var remaining = key;
@@ -173,6 +166,79 @@ FSCache.prototype.relativePathify = function relativePathify(key) {
 };
 
 // === internal helpers (private, 'this' value explicity pased as 'self') ===
+
+function getFile(self, key, name, callback) {
+    log(self, 'getFile() called', { key: key, name: name });
+    fs.readFile(name, (err, data) => {
+        if (err) {
+            error(self, 'getFile() read error', { key: key, name: name, err: err });
+            callback(err);
+            return;
+        }
+
+        try {
+            var obj = JSON.parse(data.toString());
+
+            if (!!key && obj.key !== key) {
+                error(self, 'getFile() key does not match!', { key: key, dataKey: obj.key });
+                throw 'key mismatch';
+            }
+
+            if (fullPathify(self, obj.key) !== name) {
+                error(self, 'getFile() key does not match path!');
+                throw 'key/path mismatch';
+            }
+
+            if (obj.expires > 0 && obj.expires <= Date.now()) {
+                log(self, 'getFile() data has expired!', { key: key });
+                throw 'data has expired';
+            }
+
+            callback(null, obj);
+        } catch (err) {
+            error(self, 'getFile() JSON error', { key: key, err: err });
+            callback(err);
+        }
+    });
+}
+
+function getTreeOrFile(self, curPath, results, callback) {
+    log(self, 'getTreeOrFile() called', { curPath: curPath })
+    fs.readdir(curPath, (err, files) => {
+        if (err) {
+            // if file, try to load it directly!... and return the key/value in
+            // an object
+            log(self, 'getTreeOrFile() readdir error', { curPath: curPath, err: err });
+            getFile(self, null, curPath, (err, obj) => {
+                if (err) {
+                    error(self, 'getTreeOrFile() file error', { curPath: curPath, err: err });
+                    callback(err);
+                    return;
+                }
+                results[obj.key] = obj.data;
+                callback(null, results);
+            });
+            return;
+        }
+
+        // successful means we need to recurse on each item...
+        log(self, 'getTreeOrFile() got', { files: files, err: err });
+        var done = 0;
+        for (const file of files) {
+            getTreeOrFile(self, path.join(curPath, file), results, (err, data) => {
+                if (err) {
+                    error(self, 'getTreeOrFile() dir error', { curPath: curPath, file: file, err: err });
+                    callback(err);
+                    return;
+                }
+                done++;
+                if (done === files.length) {
+                    callback(null, data);
+                }
+            });
+        }
+    });
+}
 
 function delKey(self, key, callback) {
     log(self, 'delKey() called', { key: key });
