@@ -1,6 +1,6 @@
 'use strict';
 
-const fs = require('fs');
+const fs = require('graceful-fs');
 const path = require('path');
 const mkdirp = require('mkdirp');
 
@@ -14,6 +14,7 @@ function FSCache(config) {
     this.type = config.type || 'file-system';
     this.defaultExpiration = config.defaultExpiration || 900;
     this.checkOnPreviousEmpty = config.checkOnPreviousEmpty || true;
+    // TODO: implement readOnly checks?
     this.readOnly = config.readOnly || false;
 }
 
@@ -22,12 +23,14 @@ function FSCache(config) {
 FSCache.prototype.get = function get(key, callback) {
     log(this, 'get() called', { key: key });
     var name = fullPathify(this, key);
-    getFile(this, key, name, (err, obj) => {
+    getFile(this, key, name, false, (err, obj) => {
         if (err) {
-            callback(err);
+            // callback(err);
+            // errors treated as a miss...
+            callback(null, null);
             return;
         }
-        callback(null, obj.data);
+        callback(null, obj && obj.data);
     });
 };
 
@@ -55,7 +58,7 @@ FSCache.prototype.mget = function mget(keys, callback) {
 
 FSCache.prototype.set = function set(key, value, expiration, refresh, callback) {
     var self = this;
-    log(self, 'set() called', { key: key, value: value });
+    log(self, 'set() called', { key: key, value: value, arguments: arguments });
     if (arguments.length === 3 && typeof expiration === 'function') {
         callback = expiration;
         expiration = self.defaultExpiration;
@@ -76,9 +79,16 @@ FSCache.prototype.set = function set(key, value, expiration, refresh, callback) 
         data: value,
     };
     var data = JSON.stringify(cacheData);
-    mkdirp(path.dirname(filePath), err => {
+    mkdirp(path.dirname(filePath), (err, made) => {
+        if (err) {
+            callback(err);
+            return;
+        }
+        log(self, 'set() made directory', { made: made });
         fs.writeFile(filePath, data, err => {
-            error(self, 'set() error', { key: key, err: err });
+            if (err) {
+                error(self, 'set() error', { key: key, err: err });
+            }
             callback(err);
         });
     });
@@ -148,7 +158,7 @@ FSCache.prototype.db = 'none'; // bogus truthy value, just in case
 FSCache.prototype.mgetall = function mgetall(callback) {
     var self = this;
     log(self, 'mgetall() called');
-    getTreeOrFile(self, self.cacheRoot, {}, (err, data) => {
+    getTreeOrFile(self, self.cacheRoot, false, {}, (err, data) => {
         log(self, 'mgetall() got', { data: data, err: err });
         callback(err, data);
     });
@@ -168,12 +178,20 @@ FSCache.prototype.relativePathify = function relativePathify(key) {
 
 // === internal helpers (private, 'this' value explicity pased as 'self') ===
 
-function getFile(self, key, name, callback) {
+// TODO: handle missing/ENOENT slightly differently (not an error?) in some
+// cases?
+
+function getFile(self, key, name, expected, callback) {
     log(self, 'getFile() called', { key: key, name: name });
     fs.readFile(name, (err, data) => {
         if (err) {
-            error(self, 'getFile() read error', { key: key, name: name, err: err });
-            callback(err);
+            // only log an error if it's expected (or not ENOENT)
+            if (expected || err.code !== 'ENOENT') {
+                error(self, 'getFile() read error', { key: key, name: name, err: err });
+                callback(err);
+                return;
+            }
+            callback(null, null);
             return;
         }
 
@@ -181,42 +199,65 @@ function getFile(self, key, name, callback) {
             var obj = JSON.parse(data.toString());
 
             if (!!key && obj.key !== key) {
-                error(self, 'getFile() key does not match!', { key: key, dataKey: obj.key });
-                throw 'key mismatch';
+                error(self, 'getFile() key does not match!', { key: key, name: name, dataKey: obj.key });
+                throw new Error('key mismatch');
             }
 
             if (fullPathify(self, obj.key) !== name) {
-                error(self, 'getFile() key does not match path!');
-                throw 'key/path mismatch';
+                error(self, 'getFile() key does not match path!', { name: name, innerKey: obj.key});
+                throw new Error('key/path mismatch');
             }
 
             if (obj.expires > 0 && obj.expires <= Date.now()) {
-                log(self, 'getFile() data has expired!', { key: key });
-                throw 'data has expired';
+                log(self, 'getFile() data has expired!', { key: key, name: name });
+                throw new Error('data has expired');
             }
 
             callback(null, obj);
         } catch (err) {
-            error(self, 'getFile() JSON error', { key: key, err: err });
-            callback(err);
+            error(self, 'getFile() JSON error', { key: key, name: name, err: err });
+            // Delete the file so that we don't worry about it anymore.
+            // Note that we call back with the original failure, not unlink's
+            // (if any).
+            fs.unlink(name, unlinkErr => {
+                if (unlinkErr) {
+                    error(self, 'getFile() unlink error (eaten!)', { key: key, name: name, err: err });
+                }
+                callback(err);
+            });
         }
     });
 }
 
-function getTreeOrFile(self, curPath, results, callback) {
+function getTreeOrFile(self, curPath, expected, results, callback) {
     log(self, 'getTreeOrFile() called', { curPath: curPath })
     fs.readdir(curPath, (err, files) => {
         if (err) {
             // if file, try to load it directly!... and return the key/value in
             // an object
-            log(self, 'getTreeOrFile() readdir error', { curPath: curPath, err: err });
-            getFile(self, null, curPath, (err, obj) => {
+            if (err.code !== 'ENOENT') {
+                log(self, 'getTreeOrFile() readdir error', { curPath: curPath, err: err });
+                // REVIEW: do we bail for non-ENOENT failures?
+            }
+            getFile(self, null, curPath, expected, (err, obj) => {
                 if (err) {
-                    error(self, 'getTreeOrFile() file error', { curPath: curPath, err: err });
-                    callback(err);
+                    // if (expected) {
+                    //     error(self, 'getTreeOrFile() file error', { curPath: curPath, err: err });
+                    // }
+                    // callback(err);
+
+                    // This code path is only ever hit from .mgetall(), and the
+                    // "right" behavior is to ignore any unloadable files.
+                    callback(null, results);
                     return;
                 }
-                results[obj.key] = obj.data;
+                // Should we put in explicitly missing keys, or omit them?
+                // right now, we requre the key to be embedded in the data,
+                // so we *can't* set it if there's no data.  (The `.mget()`
+                // docs don't describe what a partial return looks like.)
+                if (obj) {
+                    results[obj.key] = obj.data;
+                }
                 callback(null, results);
             });
             return;
@@ -224,11 +265,15 @@ function getTreeOrFile(self, curPath, results, callback) {
 
         // successful means we need to recurse on each item...
         log(self, 'getTreeOrFile() got', { files: files, err: err });
+        if (files.length === 0) {
+            callback(null, results);
+            return
+        }
         var done = 0;
         for (const file of files) {
-            getTreeOrFile(self, path.join(curPath, file), results, (err, data) => {
+            getTreeOrFile(self, path.join(curPath, file), true, results, (err, data) => {
                 if (err) {
-                    error(self, 'getTreeOrFile() dir error', { curPath: curPath, file: file, err: err });
+                    // error(self, 'getTreeOrFile() dir error', { curPath: curPath, file: file, err: err });
                     callback(err);
                     return;
                 }

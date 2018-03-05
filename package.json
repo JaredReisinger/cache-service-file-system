@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/JaredReisinger/cache-service-file-system#readme",
   "dependencies": {
+    "graceful-fs": "^4.1.11",
     "mkdirp": "^0.5.1"
   }
 }
